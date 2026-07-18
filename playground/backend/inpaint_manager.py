@@ -7,7 +7,7 @@ Stub: AnimeAdapter (inpaint_animeadapter.py)
 
 auto:
   - surface edits: SDXL → quality gate → on fail/error → Kontext → re-score → best-of
-  - structural edits: skip SDXL, go straight to Kontext
+  - structural edits: skip SDXL, expand mask 2x, go straight to Kontext
 Writes provenance exactly once per successful public inpaint() call.
 """
 
@@ -27,6 +27,7 @@ from backend.inpaint import (
     load_image,
     normalize_mask,
 )
+from backend.mask_utils import expand_mask, mask_expansion_clipped
 from backend.quality_gate import evaluate_inpaint
 from backend.segment import MaskInstance
 
@@ -128,7 +129,7 @@ def inpaint(
     Masked inpaint of `image` inside `mask` according to `prompt`.
 
     backend:
-      - auto: surface → SDXL then Kontext on fail; structural → Kontext direct
+      - auto: surface → SDXL then Kontext on fail; structural → 2x mask expand + Kontext
       - sdxl / flux_kontext: forced (still score if run_quality_gate)
       - animeadapter: stub (raises InpaintError)
     """
@@ -199,11 +200,18 @@ def inpaint(
     # ---- auto ----
     edit_type = classify_edit_type(prompt)
 
-    # Structural / shape edits: skip SDXL (known-weak on this prompt class)
+    # Structural / shape edits: skip SDXL (known-weak on this prompt class).
+    # Expand mask 2x about centroid before Kontext. Clamping is image-edge only —
+    # expansion can still bleed into neighboring characters/props in a busy panel;
+    # a future character-bbox-aware check is needed once the Character Bible tracks
+    # per-panel object positions. No prompt rewriting here (deferred to planner).
     if edit_type == "structural":
+        bounds = original.size  # (width, height)
+        clipped = mask_expansion_clipped(mask_img, factor=2.0, image_bounds=bounds)
+        expanded = expand_mask(mask_img, factor=2.0, image_bounds=bounds)
         result = _run_kontext(
             image,
-            mask_img,
+            expanded,
             prompt,
             mode="masked",
             seed=seed,
@@ -216,12 +224,13 @@ def inpaint(
         result = _attach_gate(
             result,
             original,
-            mask_img,
+            expanded,
             prompt,
             run_quality_gate=run_quality_gate,
             api_key=api_key,
         )
-        result.routing_reason = "structural_direct_kontext"
+        result.routing_reason = "structural_direct_kontext_expanded_mask"
+        result.mask_expansion_clipped = clipped
         append_provenance(result)
         return result
 

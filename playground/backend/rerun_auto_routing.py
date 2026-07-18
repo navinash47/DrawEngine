@@ -146,8 +146,8 @@ def main(argv: list[str] | None = None) -> int:
 
         if edit_type == "structural" and sdxl_n > 0:
             print("  WARNING: structural path still called SDXL")
-        if edit_type == "structural" and result.routing_reason != "structural_direct_kontext":
-            print(f"  WARNING: expected structural_direct_kontext")
+        if edit_type == "structural" and result.routing_reason != "structural_direct_kontext_expanded_mask":
+            print(f"  WARNING: expected structural_direct_kontext_expanded_mask")
         if edit_type == "surface" and sdxl_n < 1:
             print("  WARNING: surface path did not call SDXL")
 

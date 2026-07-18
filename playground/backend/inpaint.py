@@ -90,6 +90,7 @@ class InpaintResult:
     routing_reason: str | None = None
     gate_passed: bool | None = None
     score_card: QualityScoreCard | None = None
+    mask_expansion_clipped: bool | None = None
     raw_response: dict = field(default_factory=dict)
 
     def to_log_dict(self) -> dict:
@@ -109,6 +110,7 @@ class InpaintResult:
             "fallback_from": self.fallback_from,
             "routing_reason": self.routing_reason,
             "gate_passed": self.gate_passed,
+            "mask_expansion_clipped": self.mask_expansion_clipped,
             "score_card": self.score_card.to_dict() if self.score_card else None,
         }
         return d
