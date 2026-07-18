@@ -87,6 +87,7 @@ class InpaintResult:
     parent_step_id: str | None = None
     fal_request_id: str | None = None
     fallback_from: str | None = None
+    routing_reason: str | None = None
     gate_passed: bool | None = None
     score_card: QualityScoreCard | None = None
     raw_response: dict = field(default_factory=dict)
@@ -106,6 +107,7 @@ class InpaintResult:
             "parent_step_id": self.parent_step_id,
             "fal_request_id": self.fal_request_id,
             "fallback_from": self.fallback_from,
+            "routing_reason": self.routing_reason,
             "gate_passed": self.gate_passed,
             "score_card": self.score_card.to_dict() if self.score_card else None,
         }
@@ -248,7 +250,7 @@ def composite_masked(
 
 
 def subscribe_fal(model_id: str, arguments: dict, timeout: int = 180) -> tuple[dict, str | None]:
-    """Call fal_client.subscribe; return (data dict, request_id)."""
+    """Call fal_client.subscribe; return (data dict, request_id). Logs estimated cost."""
     fal_client = ensure_fal_client()
     resolve_fal_key()
     try:
@@ -263,14 +265,23 @@ def subscribe_fal(model_id: str, arguments: dict, timeout: int = 180) -> tuple[d
 
     # fal_client may return a dict directly or an object with .data / .request_id
     if isinstance(handle, dict):
-        return handle, None
-    data = getattr(handle, "data", None) or handle
-    req_id = getattr(handle, "request_id", None)
-    if not isinstance(data, dict):
-        try:
-            data = dict(data)
-        except Exception as e:
-            raise InpaintError(f"Unexpected fal response type: {type(handle)}") from e
+        data, req_id = handle, None
+    else:
+        data = getattr(handle, "data", None) or handle
+        req_id = getattr(handle, "request_id", None)
+        if not isinstance(data, dict):
+            try:
+                data = dict(data)
+            except Exception as e:
+                raise InpaintError(f"Unexpected fal response type: {type(handle)}") from e
+
+    try:
+        from backend.cost_tracker import log_fal_call
+
+        log_fal_call(model_id, arguments, data, request_id=req_id)
+    except Exception:
+        pass  # never block generation on cost logging
+
     return data, req_id
 
 

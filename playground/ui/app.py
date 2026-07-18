@@ -34,6 +34,32 @@ except ImportError:
 
 from backend.inpaint import InpaintError, inpaint
 from backend.mask_utils import instance_to_mask
+from backend.cost_tracker import (
+    format_meter_markdown,
+    recent_rows_for_table,
+    reset_session,
+    session_totals,
+    summarize,
+)
+
+
+def _cost_line() -> str:
+    s = session_totals()
+    total = summarize()["total_usd"]
+    return (
+        f"est. session ${s['session_usd']:.4f} ({s['session_calls']} calls) · "
+        f"all-time ${total:.4f}"
+    )
+
+
+def refresh_costs():
+    s = summarize()
+    return format_meter_markdown(s), recent_rows_for_table(40)
+
+
+def reset_session_costs():
+    reset_session()
+    return refresh_costs()
 
 
 def _load_latest_seg_for_prompt(text_prompt: str) -> SegmentationResult | None:
@@ -238,7 +264,8 @@ def run_inpaint(
         f"request_id={result.request_id} · fal={result.fal_request_id}\n"
         f"fallback_from={result.fallback_from} · parent={result.parent_step_id}\n"
         f"output={result.output_path}\n"
-        f"{_format_score_card(result)}"
+        f"{_format_score_card(result)}\n"
+        f"{_cost_line()}"
     )
     return out_img, status
 
@@ -370,6 +397,27 @@ with gr.Blocks(title="Operation Shustrutha — Playground") as demo:
             outputs=[ip_result, ip_status],
         )
 
+    with gr.Tab("Costs"):
+        gr.Markdown(
+            "Track **estimated** API spend (fal + Roboflow). "
+            "Not invoices — rates are local approximations in `backend/cost_tracker.py`."
+        )
+        cost_meter = gr.Markdown(value=format_meter_markdown())
+        cost_table = gr.Dataframe(
+            headers=["time", "provider", "model", "operation", "est_usd", "request_id"],
+            value=recent_rows_for_table(40),
+            interactive=False,
+            label="Recent API calls",
+            wrap=True,
+        )
+        with gr.Row():
+            cost_refresh = gr.Button("Refresh", variant="primary")
+            cost_reset_session = gr.Button("Reset session counter")
+        cost_refresh.click(fn=refresh_costs, inputs=[], outputs=[cost_meter, cost_table])
+        cost_reset_session.click(
+            fn=reset_session_costs, inputs=[], outputs=[cost_meter, cost_table]
+        )
+
     with gr.Tab("About"):
         gr.Markdown(
             """
@@ -388,6 +436,9 @@ with gr.Blocks(title="Operation Shustrutha — Playground") as demo:
             - Quality gate: outside-mask fidelity + inside change + Moondream2 prompt check
             - Router: `backend/inpaint_manager.py` (`auto` = SDXL → gate → Kontext)
             - Logs: `data/logs/inpaint_log.jsonl`, outputs in `data/inpaints/`
+
+            ### Costs
+            - Estimated USD meter: Costs tab · log `data/logs/api_cost_log.jsonl`
 
             ### Env
             - `ROBOFLOW_API_KEY` — segmentation

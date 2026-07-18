@@ -5,7 +5,9 @@ Primary: SDXL (inpaint_sdxl.py)
 Fallback: FLUX Kontext fill (inpaint_kontext.py)
 Stub: AnimeAdapter (inpaint_animeadapter.py)
 
-auto: SDXL → quality gate → on fail/error → Kontext → re-score → best-of.
+auto:
+  - surface edits: SDXL → quality gate → on fail/error → Kontext → re-score → best-of
+  - structural edits: skip SDXL, go straight to Kontext
 Writes provenance exactly once per successful public inpaint() call.
 """
 
@@ -17,6 +19,7 @@ from typing import Literal, Union
 from PIL import Image
 
 from backend import inpaint_animeadapter, inpaint_kontext, inpaint_sdxl
+from backend.edit_classifier import classify_edit_type
 from backend.inpaint import (
     InpaintError,
     InpaintResult,
@@ -125,7 +128,7 @@ def inpaint(
     Masked inpaint of `image` inside `mask` according to `prompt`.
 
     backend:
-      - auto: SDXL, then FLUX Kontext on API error or quality-gate fail
+      - auto: surface → SDXL then Kontext on fail; structural → Kontext direct
       - sdxl / flux_kontext: forced (still score if run_quality_gate)
       - animeadapter: stub (raises InpaintError)
     """
@@ -164,6 +167,7 @@ def inpaint(
             run_quality_gate=run_quality_gate,
             api_key=api_key,
         )
+        result.routing_reason = "forced_sdxl"
         append_provenance(result)
         return result
 
@@ -188,10 +192,40 @@ def inpaint(
             run_quality_gate=run_quality_gate,
             api_key=api_key,
         )
+        result.routing_reason = "forced_kontext"
         append_provenance(result)
         return result
 
     # ---- auto ----
+    edit_type = classify_edit_type(prompt)
+
+    # Structural / shape edits: skip SDXL (known-weak on this prompt class)
+    if edit_type == "structural":
+        result = _run_kontext(
+            image,
+            mask_img,
+            prompt,
+            mode="masked",
+            seed=seed,
+            reference_image=reference_image,
+            parent_step_id=parent_step_id,
+            api_key=api_key,
+            timeout=timeout,
+        )
+        result.fallback_from = None
+        result = _attach_gate(
+            result,
+            original,
+            mask_img,
+            prompt,
+            run_quality_gate=run_quality_gate,
+            api_key=api_key,
+        )
+        result.routing_reason = "structural_direct_kontext"
+        append_provenance(result)
+        return result
+
+    # Surface edits: SDXL first, Kontext on gate fail / API error
     primary_error: Exception | None = None
     primary: InpaintResult | None = None
 
@@ -215,6 +249,7 @@ def inpaint(
             api_key=api_key,
         )
         if not run_quality_gate or (primary.score_card and primary.score_card.passed):
+            primary.routing_reason = "surface_sdxl_first"
             append_provenance(primary)
             return primary
         # gate failed → fall through to Kontext
@@ -237,12 +272,28 @@ def inpaint(
         if primary is not None:
             # Kontext failed but we still have an SDXL result (gate failed)
             primary.fallback_from = None
+            primary.routing_reason = "surface_sdxl_failed_kontext_error"
             append_provenance(primary)
             return primary
         raise InpaintError(
             f"All backends failed. SDXL: {primary_error}; "
             f"flux_kontext: {fallback_error}"
         ) from fallback_error
+
+    if primary is None:
+        # SDXL errored; only Kontext succeeded
+        fallback.fallback_from = "sdxl"
+        fallback = _attach_gate(
+            fallback,
+            original,
+            mask_img,
+            prompt,
+            run_quality_gate=run_quality_gate,
+            api_key=api_key,
+        )
+        fallback.routing_reason = "surface_sdxl_error_fallback_kontext"
+        append_provenance(fallback)
+        return fallback
 
     fallback.fallback_from = "sdxl"
     fallback = _attach_gate(
@@ -254,12 +305,9 @@ def inpaint(
         api_key=api_key,
     )
 
-    if primary is None:
-        append_provenance(fallback)
-        return fallback
-
     # Both exist and primary failed the gate — pick better by weighted score
     if not run_quality_gate:
+        fallback.routing_reason = "surface_sdxl_failed_fallback_kontext"
         append_provenance(fallback)
         return fallback
 
@@ -267,10 +315,12 @@ def inpaint(
     f_score = fallback.score_card.weighted_score() if fallback.score_card else -1.0
 
     if f_score >= p_score:
+        fallback.routing_reason = "surface_sdxl_failed_fallback_kontext"
         append_provenance(fallback)
         return fallback
 
     # Prefer primary if somehow better despite gate fail (shouldn't happen often)
     primary.fallback_from = None
+    primary.routing_reason = "surface_sdxl_failed_kept_sdxl"
     append_provenance(primary)
     return primary

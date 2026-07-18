@@ -58,13 +58,41 @@ def _change_from_mae(mae: float, min_threshold: float = _INSIDE_MAE_MIN) -> floa
     return float(min(1.0, mae / 0.2))
 
 
+_NO_MATCH_PHRASES = (
+    "unrelated",
+    "does not match",
+    "doesn't match",
+    "no match",
+    "not related",
+    "not match",
+)
+_MATCH_PHRASES = (
+    "matches",
+    "related",
+    "consistent with",
+    "yes",
+)
+
+
 def _parse_vlm_match(text: str) -> tuple[float, str]:
     """Extract match score 0..1 from VLM output; soft-fail to 0 on parse errors."""
     if not text:
         return 0.0, "empty VLM response"
-    # Try JSON object first
+
+    # Primary: yes/no word-boundary answers (Moondream VQA rubric)
+    yes_m = re.search(r"\byes\b", text, re.IGNORECASE)
+    no_m = re.search(r"\bno\b", text, re.IGNORECASE)
+    if yes_m and no_m:
+        if yes_m.start() < no_m.start():
+            return 0.9, text[:200]
+        return 0.0, text[:200]
+    if yes_m:
+        return 0.9, text[:200]
+    if no_m:
+        return 0.0, text[:200]
+
+    # Try JSON object
     try:
-        # find first {...}
         m = re.search(r"\{[^{}]*\}", text, re.DOTALL)
         if m:
             obj = json.loads(m.group(0))
@@ -73,6 +101,7 @@ def _parse_vlm_match(text: str) -> tuple[float, str]:
             return max(0.0, min(1.0, match)), reason or text[:200]
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
+
     # Fallback: look for a float 0-1 or 0-10
     m = re.search(r"\b(0?\.\d+|1\.0|1|0)\b", text)
     if m:
@@ -80,6 +109,14 @@ def _parse_vlm_match(text: str) -> tuple[float, str]:
         if val > 1.0:
             val = val / 10.0
         return max(0.0, min(1.0, val)), text[:200]
+
+    # Keyword heuristic for plain-language answers
+    lower = text.lower()
+    if any(p in lower for p in _NO_MATCH_PHRASES):
+        return 0.0, f"VLM said no match: {text[:200]}"
+    if any(p in lower for p in _MATCH_PHRASES):
+        return 0.75, f"VLM said match (heuristic): {text[:200]}"
+
     return 0.0, f"unparseable VLM output: {text[:200]}"
 
 
@@ -97,23 +134,22 @@ def _prompt_adherence_vlm(
     *,
     api_key: str | None = None,
 ) -> tuple[float, str]:
+    """Return (score, raw_model_text). raw is the actual VLM reply, not a parsed reason."""
     resolve_fal_key(api_key)
     crop = _crop_masked_region(result_image, mask)
     url = upload_pil(crop, suffix=".png")
     rubric = (
-        "You are scoring an image edit. The crop shows ONLY the edited region. "
-        f'The intended edit prompt was: "{prompt}". '
-        "Reply with ONLY a JSON object like "
-        '{"match": 0.0, "reason": "short reason"} where match is from 0 to 1 '
-        "(1 = the crop clearly matches the prompt, 0 = completely unrelated)."
+        f'Does this image clearly show "{prompt}"? '
+        'Answer with only the word "yes" or the word "no".'
     )
     data, _ = subscribe_fal(
         MOONDREAM_MODEL,
         {"image_url": url, "prompt": rubric},
     )
     # moondream returns {"output": "..."} typically
-    text = data.get("output") or data.get("text") or data.get("answer") or str(data)
-    return _parse_vlm_match(str(text))
+    text = str(data.get("output") or data.get("text") or data.get("answer") or data)
+    score, _ = _parse_vlm_match(text)
+    return score, text[:500]
 
 
 def evaluate_inpaint(

@@ -124,6 +124,17 @@ def polygon_to_bbox(polygon: list) -> dict:
 def append_provenance(result: SegmentationResult) -> None:
     with open(PROVENANCE_LOG, "a") as f:
         f.write(json.dumps(result.to_log_dict()) + "\n")
+    try:
+        from backend.cost_tracker import log_roboflow_call
+
+        log_roboflow_call(
+            model=result.model_version,
+            operation="segment",
+            request_id=result.request_id,
+            related_id=result.request_id,
+        )
+    except Exception:
+        pass
 
 
 def save_masks(result: SegmentationResult) -> Path:
