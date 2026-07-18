@@ -1,9 +1,9 @@
 """
 viz.py — Render segmentation masks as overlays on the original image.
 
-Kept separate from segment.py because "how a mask looks" is a UI concern,
-not a segmentation concern. ComicAgentEngine will use raw polygons from
-segment.py directly and never touch this module.
+Kept separate from the segmentation backends because "how a mask looks" is a
+UI concern, not a segmentation concern. ComicAgentEngine will use raw polygons
+from segment() directly and never touch this module.
 """
 
 from __future__ import annotations

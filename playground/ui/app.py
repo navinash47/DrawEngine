@@ -26,31 +26,39 @@ except ImportError:
     render_overlay = None  # Pillow missing; overlay tab will show an error
 
 
-def run_segmentation(image_path, text_prompt, prob_threshold):
+def run_segmentation(image_path, text_prompt, prob_threshold, backend):
     if image_path is None:
         return None, "Upload an image first.", gr.update(choices=[], value=None)
     if not text_prompt or not text_prompt.strip():
         return None, "Type a text prompt, e.g. 'the hat'.", gr.update(choices=[], value=None)
 
     try:
-        result = segment(image_path, text_prompt.strip(), prob_threshold=prob_threshold)
+        result = segment(
+            image_path,
+            text_prompt.strip(),
+            prob_threshold=prob_threshold,
+            backend=backend,
+        )
     except SegmentationError as e:
         return None, f"⚠️ {e}", gr.update(choices=[], value=None)
 
     if not result.instances:
-        return None, f"No matches found for '{text_prompt}'. Try a different phrase.", gr.update(choices=[], value=None)
+        return (
+            None,
+            f"No matches found for '{text_prompt}' via {result.model_version}. "
+            "Try a different phrase or backend.",
+            gr.update(choices=[], value=None),
+        )
 
     overlay_img = render_overlay(image_path, result) if render_overlay else None
 
     choices = [f"#{i.instance_id} (conf {i.confidence:.2f})" for i in result.instances]
     status = (
         f"Found {len(result.instances)} instance(s) for '{text_prompt}'. "
-        f"request_id={result.request_id} · logged to data/logs/segmentation_log.jsonl"
+        f"backend={result.model_version} · request_id={result.request_id} · "
+        f"logged to data/logs/segmentation_log.jsonl"
     )
 
-    # stash the result on the component's state via a closure-friendly trick:
-    # simplest robust approach for Gradio is to return the request_id and
-    # re-load the saved mask JSON when the user picks an instance.
     return overlay_img, status, gr.update(choices=choices, value=choices[0] if choices else None)
 
 
@@ -87,7 +95,10 @@ def highlight_instance(image_path, text_prompt, choice_label):
 
 with gr.Blocks(title="Operation Shustrutha — Playground") as demo:
     gr.Markdown("# 🎨 The Playground")
-    gr.Markdown("**A1 — Text-Grounded Segmentation** (SAM 3 via Roboflow, hosted)")
+    gr.Markdown(
+        "**A1 — Text-Grounded Segmentation** "
+        "(SAM 3 primary, YOLO-World + SAM 2 fallback — both via Roboflow)"
+    )
 
     with gr.Tab("Segment"):
         with gr.Row():
@@ -100,6 +111,12 @@ with gr.Blocks(title="Operation Shustrutha — Playground") as demo:
                 threshold_slider = gr.Slider(
                     0.0, 1.0, value=0.5, step=0.05, label="Confidence threshold"
                 )
+                backend_dropdown = gr.Dropdown(
+                    choices=["auto", "sam3", "grounded_sam2"],
+                    value="auto",
+                    label="Backend",
+                    info="auto = SAM 3, fall back to YOLO-World+SAM 2 on error/empty",
+                )
                 run_btn = gr.Button("Segment", variant="primary")
                 status_box = gr.Textbox(label="Status", interactive=False)
                 instance_picker = gr.Dropdown(
@@ -111,7 +128,7 @@ with gr.Blocks(title="Operation Shustrutha — Playground") as demo:
 
         run_btn.click(
             fn=run_segmentation,
-            inputs=[image_input, prompt_input, threshold_slider],
+            inputs=[image_input, prompt_input, threshold_slider, backend_dropdown],
             outputs=[output_image, status_box, instance_picker],
         )
         instance_picker.change(
@@ -125,8 +142,12 @@ with gr.Blocks(title="Operation Shustrutha — Playground") as demo:
             """
             This is the first primitive of **The Playground** (Operation Shustrutha).
 
-            - Backend: `backend/segment.py` calls Roboflow's hosted SAM 3 API
-              (`sam3/concept_segment`). No local GPU needed.
+            - **Primary**: `backend/sam3.py` — Roboflow hosted SAM 3
+              (`sam3/concept_segment`).
+            - **Fallback**: `backend/grounded_sam2.py` — YOLO-World (text→boxes)
+              then SAM 2 (boxes→masks). Same API key; no local GPU.
+            - **Router**: `backend/manager.py` tries SAM 3 first in `auto` mode,
+              then falls back on error or empty results. Provenance is written once.
             - Every call is logged to `data/logs/segmentation_log.jsonl` and full
               mask polygons are saved to `data/masks/<request_id>.json` — this is
               the seed of the edit-provenance system future tools (inpainting,

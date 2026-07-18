@@ -5,7 +5,7 @@ ComicAgentEngine can call them directly later. The Gradio UI is a thin
 layer for you (and beta testers) to drive them by eye.
 
 ## Status
-- ✅ **A1 — Text-grounded segmentation** (SAM 3 via Roboflow's hosted API)
+- ✅ **A1 — Text-grounded segmentation** (SAM 3 primary + YOLO-World/SAM 2 fallback via Roboflow)
 - ⬜ A2 — Masked inpainting
 - ⬜ A3 — Identity conditioning (IP-Adapter / LoRA)
 - ⬜ A4 — ControlNet stacking
@@ -35,4 +35,6 @@ python ui/app.py
 
 This launches a local Gradio app (usually http://127.0.0.1:7860). Upload an
 image, type a short phrase like "the hat" or "the girl in the red cloak",
-and hit Segment.
+and hit Segment. Use **Backend → auto** to try SAM 3 first and fall back to
+YOLO-World + SAM 2 on error or empty results; force `sam3` or `grounded_sam2`
+to QA each path.
