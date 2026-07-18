@@ -20,10 +20,16 @@ pip install -r requirements.txt
 ```
 
 Get a free Roboflow API key at https://app.roboflow.com (Settings → API Keys),
-then:
+put it in a repo-root `.env` file:
 
 ```bash
-export ROBOFLOW_API_KEY=your_key_here
+# DrawEngine/.env
+ROBOFLOW_API_KEY=your_key_here
+```
+
+Then run:
+
+```bash
 python ui/app.py
 ```
 

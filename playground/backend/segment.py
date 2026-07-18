@@ -9,6 +9,7 @@ requests/roboflow directly.
 
 Env vars:
     ROBOFLOW_API_KEY   required. Get one free at https://app.roboflow.com
+                       Loaded automatically from repo-root or playground `.env`.
 
 Usage:
     from backend.segment import segment
@@ -31,6 +32,7 @@ from pathlib import Path
 from typing import Union
 
 import requests
+from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
 # Config
@@ -39,7 +41,13 @@ import requests
 ROBOFLOW_ENDPOINT = "https://serverless.roboflow.com/sam3/concept_segment"
 MODEL_VERSION_TAG = "sam3/sam3_final"  # logged for provenance; bump if Roboflow changes default
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+_PLAYGROUND_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = _PLAYGROUND_ROOT.parent
+# Prefer an already-exported shell var; otherwise pick up .env files.
+load_dotenv(_REPO_ROOT / ".env")
+load_dotenv(_PLAYGROUND_ROOT / ".env")
+
+DATA_DIR = _PLAYGROUND_ROOT / "data"
 MASKS_DIR = DATA_DIR / "masks"
 LOGS_DIR = DATA_DIR / "logs"
 PROVENANCE_LOG = LOGS_DIR / "segmentation_log.jsonl"

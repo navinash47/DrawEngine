@@ -2,7 +2,7 @@
 app.py — Playground Gradio UI, starting with the A1 Segmentation tab.
 
 Run:
-    export ROBOFLOW_API_KEY=your_key_here
+    # put ROBOFLOW_API_KEY in the repo-root .env (auto-loaded), then:
     python ui/app.py
 
 This file should stay thin: all real logic lives in backend/segment.py and
