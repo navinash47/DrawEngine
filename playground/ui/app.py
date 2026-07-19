@@ -726,4 +726,4 @@ with gr.Blocks(title="Operation Shustrutha — Playground") as demo:
         )
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(share=True)
