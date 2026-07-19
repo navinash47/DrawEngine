@@ -1,5 +1,5 @@
 """
-app.py — Playground Gradio UI (A1 Segmentation + A2 Inpaint).
+app.py — Playground Gradio UI (A1 Segmentation + A2 Inpaint + A3 Identity).
 
 Run:
     # put ROBOFLOW_API_KEY and FAL_API_KEY in the repo-root .env, then:
@@ -41,6 +41,17 @@ from backend.cost_tracker import (
     session_totals,
     summarize,
 )
+from backend.character_bible import (
+    CHARACTER_PRESETS,
+    CharacterBibleError,
+    generate_reference_candidates,
+    get_character,
+    has_reference,
+    list_candidate_paths,
+    list_characters,
+    select_reference,
+)
+from backend.generate_ipadapter import IdentityGenError, generate_with_identity
 
 
 def _cost_line() -> str:
@@ -271,6 +282,163 @@ def run_inpaint(
 
 
 # ---------------------------------------------------------------------------
+# A3 — Reference Picker + Identity Gen
+# ---------------------------------------------------------------------------
+
+def _character_choices() -> list[str]:
+    return list_characters()
+
+
+def _format_identity_card(result) -> str:
+    if result.score_card is None:
+        return "identity gate: skipped"
+    sc = result.score_card
+    return (
+        f"gate_passed={result.gate_passed}\n"
+        f"  identity_match={sc.identity_match}\n"
+        f"  passed={sc.passed}\n"
+        f"  raw_vlm={sc.raw_vlm!r}"
+    )
+
+
+def run_generate_candidates(character_id: str):
+    if not character_id:
+        return [], "Pick a character first.", gr.update(choices=[], value=None)
+    try:
+        cands = generate_reference_candidates(character_id, n=4)
+    except (CharacterBibleError, InpaintError) as e:
+        return [], f"⚠️ {e}", gr.update(choices=[], value=None)
+
+    paths = [c["image_path"] for c in cands]
+    labels = [
+        f"#{i} seed={c['seed']} · {Path(c['image_path']).name}"
+        for i, c in enumerate(cands)
+    ]
+    status = (
+        f"Generated {len(cands)} candidates for {character_id}. "
+        f"Pick one below (or upload your own). {_cost_line()}"
+    )
+    return paths, status, gr.update(choices=labels, value=labels[0] if labels else None)
+
+
+def run_select_candidate(character_id: str, choice_label: str | None):
+    if not character_id:
+        return None, "Pick a character first."
+    if not choice_label:
+        return None, "Generate candidates and pick one first."
+    # Label format: "#{i} seed={seed} · {filename}"
+    fname = None
+    if "·" in choice_label:
+        fname = choice_label.split("·", 1)[1].strip()
+    path = None
+    if fname:
+        candidate = Path(fname)
+        if candidate.is_file():
+            path = candidate
+        else:
+            for p in list_candidate_paths(character_id):
+                if Path(p).name == fname:
+                    path = Path(p)
+                    break
+    if path is None:
+        m = re.search(r"#(\d+)", choice_label)
+        if not m:
+            return None, f"Could not parse candidate from {choice_label!r}."
+        idx = int(m.group(1))
+        paths = list_candidate_paths(character_id)
+        if idx < 0 or idx >= len(paths):
+            return None, f"Candidate #{idx} not found for {character_id}."
+        path = Path(paths[idx])
+    seed = None
+    stem = path.stem
+    parts = stem.rsplit("_", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        seed = int(parts[1])
+    preset = CHARACTER_PRESETS.get(character_id, {})
+    try:
+        entry = select_reference(
+            character_id,
+            path,
+            reference_seed=seed,
+            prompt_used=preset.get("portrait_prompt"),
+        )
+    except CharacterBibleError as e:
+        return None, f"⚠️ {e}"
+    ref = Image.open(entry["reference_image_path"])
+    status = (
+        f"Selected canonical reference for {character_id}.\n"
+        f"path={entry['reference_image_path']}\n"
+        f"seed={entry.get('reference_seed')}\n"
+        f"bible=data/characters/character_bible.json"
+    )
+    return ref, status
+
+
+def run_upload_reference(character_id: str, upload_path):
+    if not character_id:
+        return None, "Pick a character first."
+    if upload_path is None:
+        return None, "Upload an image first."
+    try:
+        entry = select_reference(character_id, upload_path)
+    except CharacterBibleError as e:
+        return None, f"⚠️ {e}"
+    ref = Image.open(entry["reference_image_path"])
+    status = (
+        f"Uploaded canonical reference for {character_id}.\n"
+        f"path={entry['reference_image_path']}\n"
+        f"bible=data/characters/character_bible.json"
+    )
+    return ref, status
+
+
+def load_current_reference(character_id: str):
+    if not character_id or not has_reference(character_id):
+        return None
+    entry = get_character(character_id)
+    return Image.open(entry["reference_image_path"])
+
+
+def run_identity_gen(character_id: str, scene_prompt: str, strength: float, seed):
+    if not character_id:
+        return None, None, "Pick a character first."
+    if not has_reference(character_id):
+        return (
+            None,
+            None,
+            "no reference selected — pick one in the Reference Picker tab first",
+        )
+    if not scene_prompt or not scene_prompt.strip():
+        return None, None, "Enter a scene prompt."
+
+    seed_val = int(seed) if seed is not None and str(seed).strip() != "" else None
+    entry = get_character(character_id)
+    ref_img = Image.open(entry["reference_image_path"])
+
+    try:
+        result = generate_with_identity(
+            character_id,
+            scene_prompt.strip(),
+            ip_adapter_strength=float(strength),
+            seed=seed_val,
+            run_identity_gate=True,
+        )
+    except (IdentityGenError, CharacterBibleError, InpaintError) as e:
+        return ref_img, None, f"⚠️ {e}"
+
+    out_img = Image.open(result.output_path)
+    status = (
+        f"character={result.character_id} · strength={result.ip_adapter_strength}\n"
+        f"model={result.model_version}\n"
+        f"request_id={result.request_id} · fal={result.fal_request_id}\n"
+        f"seed={result.seed} · output={result.output_path}\n"
+        f"{_format_identity_card(result)}\n"
+        f"{_cost_line()}"
+    )
+    return ref_img, out_img, status
+
+
+# ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
 
@@ -278,7 +446,8 @@ with gr.Blocks(title="Operation Shustrutha — Playground") as demo:
     gr.Markdown("# The Playground")
     gr.Markdown(
         "A1 text-grounded segmentation (Roboflow) · "
-        "A2 masked inpainting (fal SDXL → FLUX Kontext + quality gate)"
+        "A2 masked inpainting (fal SDXL → FLUX Kontext + quality gate) · "
+        "A3 identity (IP-Adapter + Character Bible)"
     )
 
     with gr.Tab("Segment"):
@@ -397,6 +566,104 @@ with gr.Blocks(title="Operation Shustrutha — Playground") as demo:
             outputs=[ip_result, ip_status],
         )
 
+    with gr.Tab("Reference Picker"):
+        gr.Markdown(
+            "Generate 4 plain txt2img portrait candidates per character, then "
+            "select **one** as the canonical IP-Adapter reference "
+            "(or upload your own Midjourney/external portrait)."
+        )
+        with gr.Row():
+            with gr.Column(scale=1):
+                ref_char = gr.Dropdown(
+                    choices=_character_choices(),
+                    value="julius_caesar",
+                    label="Character",
+                )
+                ref_gen_btn = gr.Button("Generate 4 candidates", variant="primary")
+                ref_candidate_pick = gr.Dropdown(
+                    label="Pick a candidate",
+                    choices=[],
+                    interactive=True,
+                )
+                ref_select_btn = gr.Button("Select as canonical", variant="secondary")
+                ref_upload = gr.Image(
+                    type="filepath",
+                    label="Or upload external reference",
+                )
+                ref_upload_btn = gr.Button("Save upload as canonical")
+                ref_status = gr.Textbox(label="Status", interactive=False, lines=6)
+
+            with gr.Column(scale=1):
+                ref_gallery = gr.Gallery(
+                    label="Candidates",
+                    columns=2,
+                    rows=2,
+                    height=420,
+                    object_fit="contain",
+                )
+                ref_canonical = gr.Image(label="Canonical reference", type="pil")
+
+        ref_gen_btn.click(
+            fn=run_generate_candidates,
+            inputs=[ref_char],
+            outputs=[ref_gallery, ref_status, ref_candidate_pick],
+        )
+        ref_select_btn.click(
+            fn=run_select_candidate,
+            inputs=[ref_char, ref_candidate_pick],
+            outputs=[ref_canonical, ref_status],
+        )
+        ref_upload_btn.click(
+            fn=run_upload_reference,
+            inputs=[ref_char, ref_upload],
+            outputs=[ref_canonical, ref_status],
+        )
+        ref_char.change(
+            fn=load_current_reference,
+            inputs=[ref_char],
+            outputs=[ref_canonical],
+        )
+
+    with gr.Tab("Identity Gen"):
+        gr.Markdown(
+            "IP-Adapter conditioned scene generation "
+            "(`fal-ai/flux-general` + XLabs IP-Adapter) against the Character Bible reference."
+        )
+        with gr.Row():
+            with gr.Column(scale=1):
+                id_char = gr.Dropdown(
+                    choices=_character_choices(),
+                    value="julius_caesar",
+                    label="Character",
+                )
+                id_scene = gr.Textbox(
+                    label="Scene prompt",
+                    placeholder="e.g. addressing the Roman senate",
+                )
+                id_strength = gr.Slider(
+                    0.0, 1.0, value=0.6, step=0.05, label="IP-Adapter strength"
+                )
+                id_seed = gr.Number(label="Seed (optional)", precision=0, value=None)
+                id_run_btn = gr.Button("Generate", variant="primary")
+                id_status = gr.Textbox(
+                    label="Status / identity score card", interactive=False, lines=10
+                )
+
+            with gr.Column(scale=1):
+                id_ref = gr.Image(label="Canonical reference", type="pil")
+                id_result = gr.Image(label="IP-Adapter result", type="pil")
+
+        id_run_btn.click(
+            fn=run_identity_gen,
+            inputs=[id_char, id_scene, id_strength, id_seed],
+            outputs=[id_ref, id_result, id_status],
+        )
+        id_char.change(
+            fn=load_current_reference,
+            inputs=[id_char],
+            outputs=[id_ref],
+        )
+
     with gr.Tab("Costs"):
         gr.Markdown(
             "Track **estimated** API spend (fal + Roboflow). "
@@ -437,15 +704,24 @@ with gr.Blocks(title="Operation Shustrutha — Playground") as demo:
             - Router: `backend/inpaint_manager.py` (`auto` = SDXL → gate → Kontext)
             - Logs: `data/logs/inpaint_log.jsonl`, outputs in `data/inpaints/`
 
+            ### A3 — Identity (IP-Adapter pilot)
+            - Character Bible: `backend/character_bible.py` → `data/characters/character_bible.json`
+            - Reference candidates: plain `fal-ai/fast-sdxl` portraits (Reference Picker tab)
+            - Generation: `fal-ai/flux-general` + XLabs IP-Adapter (`backend/generate_ipadapter.py`)
+            - Identity gate: Moondream2 yes/no (`backend/identity_gate.py`)
+            - Logs: `data/logs/identity_gen_log.jsonl`, `identity_gate_log.jsonl`
+            - Outputs: `data/identity_gens/`
+            - Ceiling batch: `python -m backend.run_identity_ceiling --generate-refs`
+
             ### Costs
             - Estimated USD meter: Costs tab · log `data/logs/api_cost_log.jsonl`
 
             ### Env
             - `ROBOFLOW_API_KEY` — segmentation
-            - `FAL_API_KEY` or `FAL_KEY` — inpainting + VLM gate
+            - `FAL_API_KEY` or `FAL_KEY` — inpainting, IP-Adapter, VLM gates
 
             ### Next
-            - A3 identity (IP-Adapter / LoRA), A4 ControlNet stacking
+            - Wire IP-Adapter into inpaint pipeline; LoRA for recurring leads; A4 ControlNet
             """
         )
 

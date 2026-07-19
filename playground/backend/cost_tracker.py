@@ -23,8 +23,10 @@ LOGS_DIR.mkdir(parents=True, exist_ok=True)
 RATE_TABLE: dict[str, dict[str, float]] = {
     # megapixel-billed
     "fal-ai/flux-pro/v1/fill": {"usd_per_mp": 0.05},
+    "fal-ai/flux-general": {"usd_per_mp": 0.075},
     # flat per successful call (compute-seconds model; typical inpaint)
     "fal-ai/fast-sdxl/inpainting": {"usd_per_call": 0.0025},
+    "fal-ai/fast-sdxl": {"usd_per_call": 0.0025},
     # per 1000 characters of prompt + output
     "fal-ai/moondream2/visual-query": {"usd_per_1k_chars": 0.01},
     # flat per image
